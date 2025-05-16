@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="de7a3933-be21-438c-b4ef-455bc9545b23" name="CROSP">
+        <fileTransfer accessType="SFTP" host="176.126.87.115" port="22" sshConfigId="7fc0243a-8861-4255-b939-c2d980c061b8" sshConfig="root@176.126.87.115:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
