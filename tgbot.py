@@ -11,6 +11,9 @@ and export as XLSX or PDF. Can upload files or use existing files.
     • Robust hyperlink writing with `write_url()` (no silent drops).
     • Improved thumbnail handling with better image caching and compression.
     • File size management to stay under Telegram's limits.
+    • Helper columns (Photo_URL, Link_URL) are hidden from column selection and output.
+    • PDF output now includes borders for better readability.
+    • Refactored data processing with separate methods for Excel and PDF generation.
 """
 from __future__ import annotations
 
@@ -94,8 +97,12 @@ DEFAULT_EXCLUDED_COLUMNS = [
     "Location",
 ]
 
+# Helper columns that should always be hidden from users
+HELPER_COLUMNS = ["Photo_URL", "Link_URL"]
+
 DATA_DIR = Path(__file__).resolve().parent
-MAX_FILE_SIZE = 45 * 1024 * 1024  # 45 MB
+MAX_FILE_SIZE = 45 * 1024 * 1024  # 45 MB
+
 
 # ────────────────────────────────────────────────────────────────
 # Helper functions
@@ -149,7 +156,8 @@ def _recover_link_column(df: pd.DataFrame, file_path: str) -> pd.DataFrame:
     return df
 
 
-CACHE_DIR = Path(__file__).with_suffix(".img_cache"); CACHE_DIR.mkdir(exist_ok=True)
+CACHE_DIR = Path(__file__).with_suffix(".img_cache");
+CACHE_DIR.mkdir(exist_ok=True)
 
 
 def cached_png(url: str, *, compression_level: int = 6) -> Optional[BytesIO]:
@@ -160,11 +168,14 @@ def cached_png(url: str, *, compression_level: int = 6) -> Optional[BytesIO]:
     p = CACHE_DIR / cache_key
     if p.exists():
         try:
-            bio = BytesIO(p.read_bytes()); bio.seek(0); return bio
+            bio = BytesIO(p.read_bytes());
+            bio.seek(0);
+            return bio
         except Exception:
             pass
     try:
-        r = requests.get(url, timeout=10); r.raise_for_status()
+        r = requests.get(url, timeout=10);
+        r.raise_for_status()
         img = Image.open(BytesIO(r.content))
         if img.mode in ("P", "RGBA"):
             img = img.convert("RGB")
@@ -172,11 +183,18 @@ def cached_png(url: str, *, compression_level: int = 6) -> Optional[BytesIO]:
         # Make smaller images for higher compression
         max_height = 160 if compression_level >= 8 else 200
         if h > max_height:
-            w = int(w * max_height / h); img = img.resize((w, max_height), Image.LANCZOS)
-        bio = BytesIO(); img.save(bio, "PNG", optimize=True, compress_level=compression_level)
-        bio.seek(0); p.write_bytes(bio.getbuffer()); bio.seek(0); return bio
+            w = int(w * max_height / h);
+            img = img.resize((w, max_height), Image.LANCZOS)
+        bio = BytesIO();
+        img.save(bio, "PNG", optimize=True, compress_level=compression_level)
+        bio.seek(0);
+        p.write_bytes(bio.getbuffer());
+        bio.seek(0);
+        return bio
     except Exception as exc:
-        logger.error(f"img fetch fail {url}: {exc}"); return None
+        logger.error(f"img fetch fail {url}: {exc}");
+        return None
+
 
 def insert_image(ws, row: int, col: int, bio: Optional[BytesIO]) -> None:
     if bio is None:
@@ -187,7 +205,9 @@ def insert_image(ws, row: int, col: int, bio: Optional[BytesIO]) -> None:
             ws.insert_image(row, col, "thumb.png", {"image_data": bio, "x_scale": 0.8, "y_scale": 0.8})
         else:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                bio.seek(0); shutil.copyfileobj(bio, tmp); temp_path = tmp.name
+                bio.seek(0);
+                shutil.copyfileobj(bio, tmp);
+                temp_path = tmp.name
             ws.insert_image(row, col, temp_path, {"x_scale": 0.8, "y_scale": 0.8})
             os.unlink(temp_path)
     except Exception as exc:
@@ -195,7 +215,8 @@ def insert_image(ws, row: int, col: int, bio: Optional[BytesIO]) -> None:
 
 
 def split_dataframe(df: pd.DataFrame, *, max_rows: int = 1000) -> List[pd.DataFrame]:
-    return [df.iloc[i : i + max_rows] for i in range(0, len(df), max_rows)]
+    return [df.iloc[i: i + max_rows] for i in range(0, len(df), max_rows)]
+
 
 # ────────────────────────────────────────────────────────────────
 # Helper
@@ -231,6 +252,7 @@ def insert_image_compat(ws, row, col, img_bio, *, x_scale=0.55, y_scale=0.55):
     except Exception as e:
         logger.error(f"Failed to insert image: {str(e)}")
         return False
+
 
 def get_file_size(file_path: str) -> int:
     """Get the size of a file in bytes"""
@@ -278,11 +300,13 @@ class StockSelectorBot:
         if update.message:
             await update.message.reply_text("How would you like to provide your stock data?", reply_markup=markup)
         else:
-            await update.callback_query.edit_message_text("How would you like to provide your stock data?", reply_markup=markup)
+            await update.callback_query.edit_message_text("How would you like to provide your stock data?",
+                                                          reply_markup=markup)
         return SELECT_SOURCE
 
     async def select_source(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        query = update.callback_query; await query.answer()
+        query = update.callback_query;
+        await query.answer()
         src = query.data.removeprefix("source_")
         if src == "upload":
             await query.edit_message_text("Please upload your *stock_result.xlsx* file to begin.")
@@ -302,7 +326,8 @@ class StockSelectorBot:
         return SELECT_EXISTING_FILE
 
     async def select_existing_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        q = update.callback_query; await q.answer()
+        q = update.callback_query;
+        await q.answer()
         if q.data == "back_to_source":
             return await self.show_source_selection(update, context)
         idx = int(q.data.removeprefix("file_"))
@@ -332,7 +357,8 @@ class StockSelectorBot:
             elif file_path.lower().endswith(".json"):
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                self.df = pd.json_normalize(data if isinstance(data, list) else next(v for v in data.values() if isinstance(v, list)))
+                self.df = pd.json_normalize(
+                    data if isinstance(data, list) else next(v for v in data.values() if isinstance(v, list)))
             else:
                 raise ValueError("Unsupported file type")
             self.file_path = file_path
@@ -343,9 +369,12 @@ class StockSelectorBot:
         return await self._continue_after_loading(update, context)
 
     async def _continue_after_loading(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        self.all_columns = list(self.df.columns)
-        # default visible columns
+        # Get all columns except helper columns
+        self.all_columns = [col for col in self.df.columns if col not in HELPER_COLUMNS]
+
+        # default visible columns (excluding helper columns)
         self.selected_columns = [c for c in self.all_columns if c not in DEFAULT_EXCLUDED_COLUMNS]
+
         # years
         if "Year" in self.df.columns:
             self.all_years = sorted(self.df["Year"].dropna().unique().astype(int))
@@ -372,7 +401,8 @@ class StockSelectorBot:
         return SELECTING_COLUMNS
 
     async def toggle_column(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        q = update.callback_query; await q.answer()
+        q = update.callback_query;
+        await q.answer()
         col = q.data.removeprefix("col_")
         if col in self.selected_columns:
             self.selected_columns.remove(col)
@@ -381,7 +411,8 @@ class StockSelectorBot:
         return await self.show_column_selection(update, context)
 
     async def confirm_columns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        q = update.callback_query; await q.answer()
+        q = update.callback_query;
+        await q.answer()
         if not self.selected_columns:
             await q.edit_message_text("⚠️ Select at least one column.")
             return await self.show_column_selection(update, context)
@@ -409,7 +440,8 @@ class StockSelectorBot:
         return FILTER_YEARS
 
     async def toggle_year(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        q = update.callback_query; await q.answer()
+        q = update.callback_query;
+        await q.answer()
         data = q.data
         if data == "year_all":
             self.selected_years = self.all_years.copy()
@@ -417,11 +449,13 @@ class StockSelectorBot:
             self.selected_years = []
         else:
             yr = int(data.removeprefix("year_"))
-            self.selected_years = [y for y in self.selected_years if y != yr] if yr in self.selected_years else self.selected_years + [yr]
+            self.selected_years = [y for y in self.selected_years if
+                                   y != yr] if yr in self.selected_years else self.selected_years + [yr]
         return await self.show_year_selection(update, context)
 
     async def confirm_years(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        q = update.callback_query; await q.answer()
+        q = update.callback_query;
+        await q.answer()
         if not self.selected_years:
             await q.edit_message_text("⚠️ Select at least one year.")
             return await self.show_year_selection(update, context)
@@ -446,7 +480,8 @@ class StockSelectorBot:
         return FILTER_COUNTRIES
 
     async def toggle_country(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        q = update.callback_query; await q.answer()
+        q = update.callback_query;
+        await q.answer()
         data = q.data
         if data == "ctry_all":
             self.selected_countries = self.all_countries.copy()
@@ -455,11 +490,13 @@ class StockSelectorBot:
         else:
             idx = int(data.removeprefix("ctry_"))
             c = self.all_countries[idx]
-            self.selected_countries = [x for x in self.selected_countries if x != c] if c in self.selected_countries else self.selected_countries + [c]
+            self.selected_countries = [x for x in self.selected_countries if
+                                       x != c] if c in self.selected_countries else self.selected_countries + [c]
         return await self.show_country_selection(update, context)
 
     async def confirm_countries(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        q = update.callback_query; await q.answer()
+        q = update.callback_query;
+        await q.answer()
         if not self.selected_countries:
             await q.edit_message_text("⚠️ Select at least one country.")
             return await self.show_country_selection(update, context)
@@ -470,7 +507,9 @@ class StockSelectorBot:
 
     # ── collection filtering UI ─────────────────────────────────
     async def show_collection_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        kb = [[InlineKeyboardButton(("✅ " if col in self.selected_collections else "❌ ") + (col[:23] + "…" if len(col) > 25 else col), callback_data=f"collec_{i}")]
+        kb = [[InlineKeyboardButton(
+            ("✅ " if col in self.selected_collections else "❌ ") + (col[:23] + "…" if len(col) > 25 else col),
+            callback_data=f"collec_{i}")]
               for i, col in enumerate(self.all_collections)]
         kb.append([
             InlineKeyboardButton("✅ All", callback_data="collec_all"),
@@ -482,7 +521,8 @@ class StockSelectorBot:
         return FILTER_COLLECTIONS
 
     async def toggle_collection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        q = update.callback_query; await q.answer()
+        q = update.callback_query;
+        await q.answer()
         data = q.data
         if data == "collec_all":
             self.selected_collections = self.all_collections.copy()
@@ -491,11 +531,14 @@ class StockSelectorBot:
         else:
             idx = int(data.removeprefix("collec_"))
             col = self.all_collections[idx]
-            self.selected_collections = [x for x in self.selected_collections if x != col] if col in self.selected_collections else self.selected_collections + [col]
+            self.selected_collections = [x for x in self.selected_collections if
+                                         x != col] if col in self.selected_collections else self.selected_collections + [
+                col]
         return await self.show_collection_selection(update, context)
 
     async def confirm_collections(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        q = update.callback_query; await q.answer()
+        q = update.callback_query;
+        await q.answer()
         if not self.selected_collections:
             await q.edit_message_text("⚠️ Select at least one collection.")
             return await self.show_collection_selection(update, context)
@@ -515,16 +558,17 @@ class StockSelectorBot:
         return SELECT_FORMAT
 
     async def select_format(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        q = update.callback_query; await q.answer()
+        q = update.callback_query;
+        await q.answer()
         self.output_format = "pdf" if q.data == "fmt_pdf" else "xlsx"
         await q.edit_message_text("⏳ Processing your request …")
         await self.process_data(update, context)
         return ConversationHandler.END
 
-    # ── core export ─────────────────────────────────────────────
+    # ── core data processing ──────────────────────────────────────
     async def process_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id
-        note = await context.bot.send_message(chat_id, "⏳ crunching…")
+        note = await context.bot.send_message(chat_id, "⏳ filtering data...")
 
         df = self.df.copy()
         if self.selected_years and "Year" in df.columns:
@@ -534,6 +578,7 @@ class StockSelectorBot:
         if self.selected_collections and "Collection" in df.columns:
             df = df[df["Collection"].isin(self.selected_collections)]
 
+        # Handle hidden special columns (Photo, Link)
         hide_photo = hide_link = False
         internal_cols = self.selected_columns.copy()
         for special in ("Photo", "Link"):
@@ -541,6 +586,8 @@ class StockSelectorBot:
                 internal_cols.append(special)
                 if special == "Photo": hide_photo = True
                 if special == "Link": hide_link = True
+
+        # Only include visible columns and hidden special columns
         df = df[internal_cols]
         for c in ("Photo", "Link"):
             if c in df.columns:
@@ -548,229 +595,357 @@ class StockSelectorBot:
 
         chunks = split_dataframe(df, max_rows=500)
         for part, chunk in enumerate(chunks, 1):
-            # Always create an Excel file first (even for PDF output)
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-            tmp.close()
-            xlsx_path = tmp.name
+            if self.output_format == "xlsx":
+                await self.generate_excel(
+                    chunk, part, len(chunks), note, chat_id, context,
+                    hide_photo=hide_photo, hide_link=hide_link
+                )
+            else:
+                await self.generate_pdf(
+                    chunk, part, len(chunks), note, chat_id, context,
+                    hide_photo=hide_photo, hide_link=hide_link
+                )
 
-            with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as xw:
-                chunk.to_excel(xw, index=False, sheet_name="Sheet1")
-                wb = xw.book
-                ws = xw.sheets["Sheet1"]
-                hdr_fmt = wb.add_format({"bold": True, "bg_color": "#DDEBF7", "align": "center", "valign": "vcenter"})
-                ws.set_row(0, 25, hdr_fmt)
+        await note.edit_text("✅ done")
 
-                # Set columns widths
-                for i, name in enumerate(chunk.columns):
-                    if name == "Photo":
-                        # Make Photo column much wider - at least 25 characters
-                        # This value matches what's used in stockgenerate.py (thumb_px / 7)
-                        ws.set_column(i, i, 19)
+    # ── Excel generation ─────────────────────────────────────────
+    async def generate_excel(
+            self, chunk: pd.DataFrame, part: int, total_chunks: int,
+            note, chat_id, context, *, hide_photo=False, hide_link=False
+    ) -> None:
+        # Create a temp file for the Excel
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+        tmp.close()
+        xlsx_path = tmp.name
+
+        # Create the Excel workbook with nan_inf_to_errors option
+        with pd.ExcelWriter(xlsx_path, engine="xlsxwriter",
+                            engine_kwargs={'options': {'nan_inf_to_errors': True}}) as xw:
+            chunk.to_excel(xw, index=False, sheet_name="Sheet1")
+            wb = xw.book
+            ws = xw.sheets["Sheet1"]
+
+            # Apply header formatting
+            hdr_fmt = wb.add_format({"bold": True, "bg_color": "#DDEBF7", "align": "center", "valign": "vcenter"})
+            ws.set_row(0, 25, hdr_fmt)
+
+            # Set columns widths
+            for i, name in enumerate(chunk.columns):
+                if name == "Photo":
+                    # Make Photo column much wider
+                    ws.set_column(i, i, 19)
+                else:
+                    ws.set_column(i, i, max(15, len(name) + 2))
+
+            # Set proper row height for all data rows
+            row_h_pt = 170 * 0.75
+            for r in range(1, len(chunk) + 1):
+                ws.set_row(r, row_h_pt)
+
+            helper_link_col = None
+            photo_col = None
+            link_col = None
+
+            # Handle Link column
+            if "Link" in chunk.columns:
+                link_col = chunk.columns.get_loc("Link")
+                helper_link_col = link_col + 1
+                ws.write(0, helper_link_col, "Link_URL")
+                ws.set_column(helper_link_col, helper_link_col, None, None, {"hidden": True})
+
+                for r, url in enumerate(chunk["Link"], start=1):
+                    if url and url.startswith("http"):
+                        ws.write(r, helper_link_col, url)
+                        ws.write_url(r, link_col, url, string="ALL PHOTOS LINK")
                     else:
-                        ws.set_column(i, i, max(15, len(name) + 2))
+                        ws.write(r, link_col, "")
 
-                # Set proper row height for all data rows (matching stockgenerate.py)
-                row_h_pt = 170 * 0.75  # Same height calculation as in stockgenerate.py
-                for r in range(1, len(chunk) + 1):
-                    ws.set_row(r, row_h_pt)
+                if hide_link:
+                    ws.set_column(link_col, link_col, None, None, {"hidden": True})
 
-                helper_link_col = None
-                photo_col = None
-                link_col = None
+            # Handle Photo column - no text, only images
+            if "Photo" in chunk.columns:
+                photo_col = chunk.columns.get_loc("Photo")
 
-                # Handle Link column
-                if "Link" in chunk.columns:
-                    link_col = chunk.columns.get_loc("Link")
-                    helper_link_col = link_col + 1
-                    ws.write(0, helper_link_col, "Link_URL")
-                    ws.set_column(helper_link_col, helper_link_col, None, None, {"hidden": True})
+                total_pics = sum(1 for u in chunk["Photo"] if u and u.startswith("http"))
+                done = 0
 
-                    for r, url in enumerate(chunk["Link"], start=1):
-                        if url and url.startswith("http"):
-                            ws.write(r, helper_link_col, url)
-                            ws.write_url(r, link_col, url, string="ALL PHOTOS LINK")
-                        else:
-                            ws.write(r, link_col, "")
+                for r, url in enumerate(chunk["Photo"], start=1):
+                    # Clear the cell (no text in Photo column)
+                    ws.write(r, photo_col, "")
 
-                    if hide_link:
-                        ws.set_column(link_col, link_col, None, None, {"hidden": True})
+                    if url and url.startswith("http"):
+                        # Use the improved insert_image_compat with larger scale
+                        insert_image_compat(ws, r, photo_col, cached_png(url), x_scale=0.85, y_scale=0.85)
+                        done += 1
+                        if done % 10 == 0:
+                            try:
+                                await note.edit_text(f"⏳ thumbnails {done}/{total_pics}")
+                            except Exception:
+                                pass
 
-                # Handle Photo column - no text, only images
-                if "Photo" in chunk.columns:
-                    photo_col = chunk.columns.get_loc("Photo")
+                if hide_photo:
+                    ws.set_column(photo_col, photo_col, None, None, {"hidden": True})
 
-                    total_pics = sum(1 for u in chunk["Photo"] if u and u.startswith("http"))
-                    done = 0
+        # Check file size and handle if too large
+        size = os.path.getsize(xlsx_path)
+        if size > MAX_FILE_SIZE:
+            # Try with higher compression first
+            if "Photo" in chunk.columns:
+                await self._apply_higher_compression(
+                    xlsx_path, chunk, hide_photo, hide_link, row_h_pt
+                )
 
-                    for r, url in enumerate(chunk["Photo"], start=1):
-                        # Clear the cell (no text in Photo column)
-                        ws.write(r, photo_col, "")
+            # If still too large, then remove images
+            if os.path.getsize(xlsx_path) > MAX_FILE_SIZE:
+                wb = openpyxl.load_workbook(xlsx_path)
+                ws = wb.active
+                for img in list(ws._images):
+                    ws._images.remove(img)
+                wb.save(xlsx_path)
+                wb.close()
 
-                        if url and url.startswith("http"):
-                            # Use the improved insert_image_compat with larger scale
-                            insert_image_compat(ws, r, photo_col, cached_png(url), x_scale=0.85, y_scale=0.85)
-                            done += 1
-                            if done % 10 == 0:
-                                try:
-                                    await note.edit_text(f"⏳ thumbnails {done}/{total_pics}")
-                                except Exception:
-                                    pass
+        # Send the Excel file
+        with open(xlsx_path, "rb") as f:
+            payload = BytesIO(f.read())
+            payload.seek(0)
 
-                    if hide_photo:
-                        ws.set_column(photo_col, photo_col, None, None, {"hidden": True})
+        fname = f"filtered_stock_data_part{part}of{total_chunks}.xlsx" if total_chunks > 1 else "filtered_stock_data.xlsx"
+        await context.bot.send_document(chat_id, payload, filename=fname)
 
-                # If PDF output, set landscape orientation and fit width
-                if self.output_format == "pdf":
-                    # Set worksheet to landscape mode
-                    ws.set_landscape()
-                    # Fit the print to 1 page wide
-                    ws.fit_to_pages(1, 0)  # 1 page wide, as many pages tall as needed
-                    # Set paper size to A3 for better fit
-                    ws.set_paper(8)  # 8 corresponds to A3 paper size
-                    # Center horizontally
-                    ws.center_horizontally()
+        # Clean up the temp file
+        os.unlink(xlsx_path)
 
-            # Handle file size limits
-            size = os.path.getsize(xlsx_path)
-            if size > MAX_FILE_SIZE:
-                # Try with higher compression first
-                if photo_col is not None:
-                    with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as xw:
-                        chunk.to_excel(xw, index=False, sheet_name="Sheet1")
-                        wb = xw.book
-                        ws = xw.sheets["Sheet1"]
+    # ── PDF generation ───────────────────────────────────────────
+    async def generate_pdf(
+            self, chunk: pd.DataFrame, part: int, total_chunks: int,
+            note, chat_id, context, *, hide_photo=False, hide_link=False
+    ) -> None:
+        # Create a temp file for the Excel that will be converted to PDF
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+        tmp.close()
+        xlsx_path = tmp.name
 
-                        # Re-apply all the formatting but with higher compression
-                        hdr_fmt = wb.add_format(
-                            {"bold": True, "bg_color": "#DDEBF7", "align": "center", "valign": "vcenter"})
-                        ws.set_row(0, 25, hdr_fmt)
+        # Create the Excel workbook with PDF-specific formatting and nan_inf_to_errors option
+        with pd.ExcelWriter(xlsx_path, engine="xlsxwriter",
+                            engine_kwargs={'options': {'nan_inf_to_errors': True}}) as xw:
+            chunk.to_excel(xw, index=False, sheet_name="Sheet1")
+            wb = xw.book
+            ws = xw.sheets["Sheet1"]
 
-                        # Set columns widths again
-                        for i, name in enumerate(chunk.columns):
-                            if name == "Photo":
-                                ws.set_column(i, i, 19)
-                            else:
-                                ws.set_column(i, i, max(15, len(name) + 2))
+            # Apply header formatting (with borders)
+            hdr_fmt = wb.add_format({
+                "bold": True,
+                "bg_color": "#DDEBF7",
+                "align": "center",
+                "valign": "vcenter",
+                "border": 1  # Add borders to header
+            })
+            ws.set_row(0, 25, hdr_fmt)
 
-                        # Set row heights again
-                        for r in range(1, len(chunk) + 1):
-                            ws.set_row(r, row_h_pt)
+            # Create cell format with borders for data cells
+            cell_fmt = wb.add_format({
+                "border": 1,
+                "align": "left",
+                "valign": "top",
+                "text_wrap": True
+            })
 
-                        # Re-process the Link column
-                        if "Link" in chunk.columns:
-                            link_col = chunk.columns.get_loc("Link")
-                            for r, url in enumerate(chunk["Link"], start=1):
-                                if url and url.startswith("http"):
-                                    ws.write_url(r, link_col, url, string="ALL PHOTOS LINK")
-                                else:
-                                    ws.write(r, link_col, "")
-
-                            if hide_link:
-                                ws.set_column(link_col, link_col, None, None, {"hidden": True})
-
-                        # Re-process Photo column with higher compression
-                        if photo_col is not None:
-                            for r, url in enumerate(chunk["Photo"], start=1):
-                                # Clear the cell (no text in Photo column)
-                                ws.write(r, photo_col, "")
-
-                                if url and url.startswith("http"):
-                                    bio = cached_png(url, compression_level=9)  # Higher compression
-                                    insert_image_compat(ws, r, photo_col, bio, x_scale=0.7,
-                                                        y_scale=0.7)  # Smaller scale
-
-                            if hide_photo:
-                                ws.set_column(photo_col, photo_col, None, None, {"hidden": True})
-
-                        # If PDF output, reapply the PDF settings
-                        if self.output_format == "pdf":
-                            ws.set_landscape()
-                            ws.fit_to_pages(1, 0)
-                            ws.set_paper(8)
-                            ws.center_horizontally()
-
-                # If still too large, then remove images
-                if os.path.getsize(xlsx_path) > MAX_FILE_SIZE:
-                    wb = openpyxl.load_workbook(xlsx_path)
-                    ws = wb.active
-                    for img in list(ws._images):
-                        ws._images.remove(img)
-                    wb.save(xlsx_path)
-                    wb.close()
-
-            # Different file handling based on format
-            if self.output_format == "pdf":
-                await note.edit_text("⏳ Converting to PDF...")
-
-                # Create PDF filename
-                pdf_path = xlsx_path.replace(".xlsx", ".pdf")
-
-                try:
-                    # Try using libreoffice for conversion (the most reliable method)
-                    cmd = [
-                        "libreoffice", "--headless", "--convert-to", "pdf",
-                        "--outdir", os.path.dirname(xlsx_path), xlsx_path
-                    ]
-                    subprocess.run(cmd, check=True, timeout=60)
-
-                    # If libreoffice conversion succeeded, send the PDF
-                    if os.path.exists(pdf_path):
-                        with open(pdf_path, "rb") as f:
-                            payload = BytesIO(f.read())
-                            payload.seek(0)
-
-                        fname = f"filtered_stock_data_part{part}of{len(chunks)}.pdf" if len(
-                            chunks) > 1 else "filtered_stock_data.pdf"
-                        await context.bot.send_document(chat_id, payload, filename=fname)
-
-                        # Clean up files
-                        os.unlink(pdf_path)
+            # Apply borders to all data cells - handle each cell safely
+            for r in range(1, len(chunk) + 1):
+                for c in range(len(chunk.columns)):
+                    # Get cell value
+                    val = chunk.iloc[r - 1, c]
+                    # Handle NaN/None values explicitly
+                    if pd.isna(val):
+                        ws.write_blank(r, c, None, cell_fmt)
                     else:
-                        # Fallback if PDF wasn't created but no error was raised
-                        await note.edit_text("⚠️ PDF conversion failed, sending Excel file instead")
-                        with open(xlsx_path, "rb") as f:
-                            payload = BytesIO(f.read())
-                            payload.seek(0)
+                        ws.write(r, c, val, cell_fmt)
 
-                        fname = f"filtered_stock_data_part{part}of{len(chunks)}.xlsx" if len(
-                            chunks) > 1 else "filtered_stock_data.xlsx"
-                        await context.bot.send_document(chat_id, payload, filename=fname)
+            # Set columns widths
+            for i, name in enumerate(chunk.columns):
+                if name == "Photo":
+                    # Make Photo column much wider
+                    ws.set_column(i, i, 19)
+                else:
+                    ws.set_column(i, i, max(15, len(name) + 2))
 
-                except Exception as e:
-                    # If PDF conversion fails, let the user know and send Excel instead
-                    logger.error(f"PDF conversion error: {e}")
-                    await note.edit_text(f"⚠️ PDF conversion failed ({str(e)[:30]}...), sending Excel file instead")
+            # Set proper row height for all data rows
+            row_h_pt = 170 * 0.75
+            for r in range(1, len(chunk) + 1):
+                ws.set_row(r, row_h_pt)
 
-                    with open(xlsx_path, "rb") as f:
-                        payload = BytesIO(f.read())
-                        payload.seek(0)
+            helper_link_col = None
+            photo_col = None
+            link_col = None
 
-                    fname = f"filtered_stock_data_part{part}of{len(chunks)}.xlsx" if len(
-                        chunks) > 1 else "filtered_stock_data.xlsx"
-                    await context.bot.send_document(chat_id, payload, filename=fname)
+            # Handle Link column
+            if "Link" in chunk.columns:
+                link_col = chunk.columns.get_loc("Link")
+                helper_link_col = link_col + 1
+                ws.write(0, helper_link_col, "Link_URL", hdr_fmt)  # Apply header format
+                ws.set_column(helper_link_col, helper_link_col, None, None, {"hidden": True})
 
-            else:  # XLSX format (original behavior)
+                for r, url in enumerate(chunk["Link"], start=1):
+                    if url and url.startswith("http"):
+                        ws.write(r, helper_link_col, url, cell_fmt)  # Apply cell format
+                        ws.write_url(r, link_col, url, string="ALL PHOTOS LINK", cell_format=cell_fmt)
+                    else:
+                        ws.write(r, link_col, "", cell_fmt)  # Apply cell format
+
+                if hide_link:
+                    ws.set_column(link_col, link_col, None, None, {"hidden": True})
+
+            # Handle Photo column - no text, only images
+            if "Photo" in chunk.columns:
+                photo_col = chunk.columns.get_loc("Photo")
+
+                total_pics = sum(1 for u in chunk["Photo"] if u and u.startswith("http"))
+                done = 0
+
+                for r, url in enumerate(chunk["Photo"], start=1):
+                    # Clear the cell (no text in Photo column) but with border format
+                    ws.write(r, photo_col, "", cell_fmt)
+
+                    if url and url.startswith("http"):
+                        # Use the improved insert_image_compat with larger scale
+                        insert_image_compat(ws, r, photo_col, cached_png(url), x_scale=0.85, y_scale=0.85)
+                        done += 1
+                        if done % 10 == 0:
+                            try:
+                                await note.edit_text(f"⏳ thumbnails {done}/{total_pics}")
+                            except Exception:
+                                pass
+
+                if hide_photo:
+                    ws.set_column(photo_col, photo_col, None, None, {"hidden": True})
+
+            # PDF-specific settings
+            ws.set_landscape()  # Set landscape orientation
+            ws.fit_to_pages(1, 0)  # Fit to 1 page wide, as many pages tall as needed
+            ws.set_paper(8)  # 8 corresponds to A3 paper size
+            ws.center_horizontally()  # Center horizontally
+
+            # Make sure all gridlines are visible in the PDF
+            ws.hide_gridlines(False)
+
+        await note.edit_text("⏳ Converting to PDF...")
+
+        # Create PDF filename
+        pdf_path = xlsx_path.replace(".xlsx", ".pdf")
+
+        try:
+            # Try using libreoffice for conversion
+            cmd = [
+                "libreoffice", "--headless", "--convert-to", "pdf",
+                "--outdir", os.path.dirname(xlsx_path), xlsx_path
+            ]
+            subprocess.run(cmd, check=True, timeout=60)
+
+            # If libreoffice conversion succeeded, send the PDF
+            if os.path.exists(pdf_path):
+                with open(pdf_path, "rb") as f:
+                    payload = BytesIO(f.read())
+                    payload.seek(0)
+
+                fname = f"filtered_stock_data_part{part}of{total_chunks}.pdf" if total_chunks > 1 else "filtered_stock_data.pdf"
+                await context.bot.send_document(chat_id, payload, filename=fname)
+
+                # Clean up files
+                os.unlink(pdf_path)
+            else:
+                # Fallback if PDF wasn't created but no error was raised
+                await note.edit_text("⚠️ PDF conversion failed, sending Excel file instead")
                 with open(xlsx_path, "rb") as f:
                     payload = BytesIO(f.read())
                     payload.seek(0)
 
-                fname = f"filtered_stock_data_part{part}of{len(chunks)}.xlsx" if len(
-                    chunks) > 1 else "filtered_stock_data.xlsx"
+                fname = f"filtered_stock_data_part{part}of{total_chunks}.xlsx" if total_chunks > 1 else "filtered_stock_data.xlsx"
                 await context.bot.send_document(chat_id, payload, filename=fname)
 
-            # Clean up the Excel file
-            os.unlink(xlsx_path)
+        except Exception as e:
+            # If PDF conversion fails, let the user know and send Excel instead
+            logger.error(f"PDF conversion error: {e}")
+            await note.edit_text(f"⚠️ PDF conversion failed ({str(e)[:30]}...), sending Excel file instead")
 
-        await note.edit_text("✅ done")
+            with open(xlsx_path, "rb") as f:
+                payload = BytesIO(f.read())
+                payload.seek(0)
+
+            fname = f"filtered_stock_data_part{part}of{total_chunks}.xlsx" if total_chunks > 1 else "filtered_stock_data.xlsx"
+            await context.bot.send_document(chat_id, payload, filename=fname)
+
+        # Clean up the temp Excel file
+        os.unlink(xlsx_path)
+
+    # ── Helper method for file size reduction ───────────────────
+    async def _apply_higher_compression(
+            self, xlsx_path: str, chunk: pd.DataFrame,
+            hide_photo: bool, hide_link: bool, row_h_pt: float
+    ) -> None:
+        with pd.ExcelWriter(xlsx_path, engine="xlsxwriter",
+                            engine_kwargs={'options': {'nan_inf_to_errors': True}}) as xw:
+            chunk.to_excel(xw, index=False, sheet_name="Sheet1")
+            wb = xw.book
+            ws = xw.sheets["Sheet1"]
+
+            # Re-apply formatting
+            hdr_fmt = wb.add_format(
+                {"bold": True, "bg_color": "#DDEBF7", "align": "center", "valign": "vcenter"}
+            )
+            ws.set_row(0, 25, hdr_fmt)
+
+            # Set columns widths again
+            for i, name in enumerate(chunk.columns):
+                if name == "Photo":
+                    ws.set_column(i, i, 19)
+                else:
+                    ws.set_column(i, i, max(15, len(name) + 2))
+
+            # Set row heights again
+            for r in range(1, len(chunk) + 1):
+                ws.set_row(r, row_h_pt)
+
+            # Re-process the Link column
+            if "Link" in chunk.columns:
+                link_col = chunk.columns.get_loc("Link")
+                helper_link_col = link_col + 1
+                ws.write(0, helper_link_col, "Link_URL")
+                ws.set_column(helper_link_col, helper_link_col, None, None, {"hidden": True})
+
+                for r, url in enumerate(chunk["Link"], start=1):
+                    if url and url.startswith("http"):
+                        ws.write(r, helper_link_col, url)
+                        ws.write_url(r, link_col, url, string="ALL PHOTOS LINK")
+                    else:
+                        ws.write(r, link_col, "")
+
+                if hide_link:
+                    ws.set_column(link_col, link_col, None, None, {"hidden": True})
+
+            # Re-process Photo column with higher compression
+            if "Photo" in chunk.columns:
+                photo_col = chunk.columns.get_loc("Photo")
+                for r, url in enumerate(chunk["Photo"], start=1):
+                    # Clear the cell (no text in Photo column)
+                    ws.write(r, photo_col, "")
+
+                    if url and url.startswith("http"):
+                        bio = cached_png(url, compression_level=9)  # Higher compression
+                        insert_image_compat(ws, r, photo_col, bio, x_scale=0.7, y_scale=0.7)  # Smaller scale
+
+                if hide_photo:
+                    ws.set_column(photo_col, photo_col, None, None, {"hidden": True})
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        await update.message.reply_text("Operation cancelled. Use /start to begin again.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("Operation cancelled. Use /start to begin again.",
+                                        reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
 
-    # ────────────────────────────────────────────────────────────────
-    # main()
-    # ────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
+# main()
+# ────────────────────────────────────────────────────────────────
 
 def main() -> None:
     application = Application.builder().token("7315690900:AAE8r-wipNaa8LXN-TqX8PU6-xsRI_BuqR8").build()
